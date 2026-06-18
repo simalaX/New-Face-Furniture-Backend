@@ -1,11 +1,8 @@
 import os
-import hmac
-import hashlib
-import time
 import jwt
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.core.config import settings
 
@@ -14,7 +11,10 @@ router = APIRouter()
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
+_bearer_scheme = HTTPBearer(auto_error=False)
 
+
+# ─── JWT helpers ──────────────────────────────────────────────────────────────
 def _create_jwt(username: str) -> str:
     payload = {
         "sub": username,
@@ -31,17 +31,23 @@ def _verify_jwt(token: str | None) -> str | None:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         return payload.get("sub")
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 
 
-def _get_token_from_request(request: Request) -> str | None:
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:]
-    return None
+# ─── Reusable auth dependency ─────────────────────────────────────────────────
+def get_current_admin(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> str:
+    """
+    FastAPI dependency — call with Depends(get_current_admin).
+    Returns the admin username or raises 401.
+    """
+    token = credentials.credentials if credentials else None
+    username = _verify_jwt(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return username
 
 
 # ─── Request schemas ──────────────────────────────────────────────────────────
@@ -74,26 +80,19 @@ def login(data: LoginRequest):
 
 @router.post("/logout")
 def logout():
-    # With JWT, logout is handled client-side by deleting the token
     return {"message": "Logged out"}
 
 
 @router.get("/me")
-def me(request: Request):
-    token = _get_token_from_request(request)
-    username = _verify_jwt(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+def me(username: str = Depends(get_current_admin)):
     return {"username": username}
 
 
 @router.post("/change-password")
-def change_password(data: ChangePasswordRequest, request: Request):
-    token = _get_token_from_request(request)
-    username = _verify_jwt(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+def change_password(
+    data: ChangePasswordRequest,
+    username: str = Depends(get_current_admin),
+):
     if data.current_password != settings.ADMIN_PASSWORD:
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
