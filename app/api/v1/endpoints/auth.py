@@ -2,51 +2,49 @@ import os
 import hmac
 import hashlib
 import time
-from fastapi import APIRouter, HTTPException, Response, Request
+import jwt
+from datetime import datetime, timedelta
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.core.config import settings
 
 router = APIRouter()
 
-# ─── Token helpers ────────────────────────────────────────────────────────────
-# Instead of storing the plaintext string "true", we store a signed token:
-#   {timestamp}:{hmac_signature}
-# This means even if someone sets the cookie manually they cannot forge it
-# without knowing the SECRET_KEY.
+ALGORITHM = "HS256"
+TOKEN_EXPIRE_HOURS = 24
 
-def _make_token() -> str:
-    """Generate a time-stamped HMAC token."""
-    ts = str(int(time.time()))
-    secret = settings.SECRET_KEY.encode()
-    sig = hmac.new(secret, ts.encode(), hashlib.sha256).hexdigest()
-    return f"{ts}:{sig}"
 
-def _verify_token(token: str | None) -> bool:
-    """Return True only if token is a valid, unexpired HMAC token."""
+def _create_jwt(username: str) -> str:
+    payload = {
+        "sub": username,
+        "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS),
+        "iat": datetime.utcnow(),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _verify_jwt(token: str | None) -> str | None:
+    """Returns username if valid, None otherwise."""
     if not token:
-        return False
+        return None
     try:
-        ts_str, sig = token.split(":", 1)
-        ts = int(ts_str)
-    except (ValueError, AttributeError):
-        return False
-
-    # Recompute expected signature
-    secret = settings.SECRET_KEY.encode()
-    expected = hmac.new(secret, ts_str.encode(), hashlib.sha256).hexdigest()
-
-    # Constant-time compare to prevent timing attacks
-    if not hmac.compare_digest(expected, sig):
-        return False
-
-    # Expire after 24 hours
-    if time.time() - ts > 86400:
-        return False
-
-    return True
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("sub")
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
 
 
-# ─── Request / Response schemas ───────────────────────────────────────────────
+def _get_token_from_request(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    return None
+
+
+# ─── Request schemas ──────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -59,45 +57,41 @@ class ChangePasswordRequest(BaseModel):
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 @router.post("/login")
-def login(data: LoginRequest, response: Response):
+def login(data: LoginRequest):
     if (
         data.username != settings.ADMIN_USERNAME
         or data.password != settings.ADMIN_PASSWORD
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = _make_token()
-
-    response.set_cookie(
-        key="admin_session",
-        value=token,
-        httponly=True,          # JS cannot read this cookie
-        samesite="lax",
-        secure=False,           # set True in production with HTTPS
-        max_age=86400,          # 24 hours
-        path="/",
-    )
-    return {"message": "Login successful", "username": data.username}
+    token = _create_jwt(data.username)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "username": data.username,
+    }
 
 
 @router.post("/logout")
-def logout(response: Response):
-    response.delete_cookie("admin_session", path="/")
+def logout():
+    # With JWT, logout is handled client-side by deleting the token
     return {"message": "Logged out"}
 
 
 @router.get("/me")
 def me(request: Request):
-    token = request.cookies.get("admin_session")
-    if not _verify_token(token):
+    token = _get_token_from_request(request)
+    username = _verify_jwt(token)
+    if not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"username": settings.ADMIN_USERNAME}
+    return {"username": username}
 
 
 @router.post("/change-password")
 def change_password(data: ChangePasswordRequest, request: Request):
-    token = request.cookies.get("admin_session")
-    if not _verify_token(token):
+    token = _get_token_from_request(request)
+    username = _verify_jwt(token)
+    if not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     if data.current_password != settings.ADMIN_PASSWORD:
@@ -106,7 +100,6 @@ def change_password(data: ChangePasswordRequest, request: Request):
     if len(data.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
 
-    # Update the .env file
     env_path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "../../../../.env")
     )
@@ -132,4 +125,4 @@ def change_password(data: ChangePasswordRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=500, detail="Could not update password file")
 
-    return {"message": "Password updated. Restart the server to apply."}
+    return {"message": "Password updated successfully."}
