@@ -4,6 +4,7 @@ from typing import List, Optional
 from app.db.database import get_db
 from app.models.base import Product
 from app.schemas.schemas import ProductCreate, ProductOut
+from app.core.auth import get_current_admin   # ← import your auth dependency
 
 router = APIRouter()
 
@@ -27,6 +28,7 @@ def get_products(
     return query.offset(skip).limit(limit).all()
 
 
+# ── IMPORTANT: /slug/{slug} must come BEFORE /{product_id} ──────────────────
 @router.get("/slug/{slug}", response_model=ProductOut)
 def get_product_by_slug(slug: str, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.slug == slug).first()
@@ -44,7 +46,20 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=ProductOut)
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
+def create_product(
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    _: str = Depends(get_current_admin),   # ← auth guard
+):
+    # Extra safety: reject if category_id is somehow missing
+    if not product.category_id:
+        raise HTTPException(status_code=422, detail="category_id is required")
+
+    # Prevent duplicate slugs
+    existing = db.query(Product).filter(Product.slug == product.slug).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Slug '{product.slug}' already exists")
+
     db_product = Product(**product.model_dump())
     db.add(db_product)
     db.commit()
@@ -53,10 +68,24 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{product_id}", response_model=ProductOut)
-def update_product(product_id: int, product: ProductCreate, db: Session = Depends(get_db)):
+def update_product(
+    product_id: int,
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    _: str = Depends(get_current_admin),   # ← auth guard
+):
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    # Allow slug to stay the same on update; only block if taken by a *different* product
+    existing = db.query(Product).filter(
+        Product.slug == product.slug,
+        Product.id != product_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Slug '{product.slug}' already taken")
+
     for key, value in product.model_dump().items():
         setattr(db_product, key, value)
     db.commit()
@@ -65,7 +94,11 @@ def update_product(product_id: int, product: ProductCreate, db: Session = Depend
 
 
 @router.delete("/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db)):
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(get_current_admin),   # ← auth guard
+):
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
