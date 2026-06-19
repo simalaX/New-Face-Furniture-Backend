@@ -4,7 +4,6 @@ from typing import List, Optional
 from app.db.database import get_db
 from app.models.base import Product
 from app.schemas.schemas import ProductCreate, ProductOut
-from app.api.v1.endpoints.auth import get_current_admin
 
 router = APIRouter()
 
@@ -49,7 +48,6 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 def create_product(
     product: ProductCreate,
     db: Session = Depends(get_db),
-    _: str = Depends(get_current_admin),
 ):
     if not product.category_id:
         raise HTTPException(status_code=422, detail="category_id is required")
@@ -70,7 +68,6 @@ def update_product(
     product_id: int,
     product: ProductCreate,
     db: Session = Depends(get_db),
-    _: str = Depends(get_current_admin),
 ):
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
@@ -94,7 +91,6 @@ def update_product(
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    _: str = Depends(get_current_admin),
 ):
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
