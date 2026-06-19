@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
+    # ── ImprovMX SMTP ─────────────────────────────────────────────────────────
+    SMTP_HOST: str = "smtp.improvmx.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = "info@newfacefurniture.co.ke"
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "info@newfacefurniture.co.ke"
+    SMTP_FROM_NAME: str = "New Face Furniture"
+
     class Config:
         env_file = ".env"
         extra = "ignore"
