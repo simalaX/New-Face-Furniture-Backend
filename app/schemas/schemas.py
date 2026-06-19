@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional, List, Union, Any
 from datetime import datetime
 
 # Category schemas
@@ -31,6 +31,29 @@ class ProductBase(BaseModel):
     is_featured: bool = False
     in_stock: bool = True
     category_id: int
+
+    @field_validator("images", mode="before")
+    @classmethod
+    def normalize_images(cls, value: Any) -> List[str]:
+        """
+        Accepts either:
+          - a list of plain URL strings: ["https://..."]
+          - a list of Cloudinary-style objects: [{"secure_url": "https://...", "public_id": "..."}]
+          - a mix of both
+        and always normalizes to a list of plain URL strings.
+        """
+        if value is None:
+            return []
+        normalized: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(item)
+            elif isinstance(item, dict):
+                url = item.get("secure_url") or item.get("url") or item.get("image_url")
+                if url:
+                    normalized.append(url)
+            # silently skip anything else unrecognized (e.g. None)
+        return normalized
 
 class ProductCreate(ProductBase):
     pass
