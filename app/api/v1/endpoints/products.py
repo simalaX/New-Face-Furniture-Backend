@@ -8,6 +8,24 @@ from app.schemas.schemas import ProductCreate, ProductOut
 router = APIRouter()
 
 
+def make_unique_slug(db: Session, base_slug: str, exclude_id: Optional[int] = None) -> str:
+    """
+    Returns a slug guaranteed to be unique among products.
+    If base_slug is taken, appends -2, -3, -4... until a free one is found.
+    exclude_id lets an update check ignore the product's own current row.
+    """
+    slug = base_slug
+    counter = 2
+    while True:
+        query = db.query(Product).filter(Product.slug == slug)
+        if exclude_id is not None:
+            query = query.filter(Product.id != exclude_id)
+        if not query.first():
+            return slug
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+
 @router.get("/", response_model=List[ProductOut])
 def get_products(
     skip: int = 0,
@@ -52,11 +70,10 @@ def create_product(
     if not product.category_id:
         raise HTTPException(status_code=422, detail="category_id is required")
 
-    existing = db.query(Product).filter(Product.slug == product.slug).first()
-    if existing:
-        raise HTTPException(status_code=400, detail=f"Slug '{product.slug}' already exists")
+    data = product.model_dump()
+    data["slug"] = make_unique_slug(db, data["slug"])
 
-    db_product = Product(**product.model_dump())
+    db_product = Product(**data)
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
@@ -73,14 +90,10 @@ def update_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    existing = db.query(Product).filter(
-        Product.slug == product.slug,
-        Product.id != product_id
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail=f"Slug '{product.slug}' already taken")
+    data = product.model_dump()
+    data["slug"] = make_unique_slug(db, data["slug"], exclude_id=product_id)
 
-    for key, value in product.model_dump().items():
+    for key, value in data.items():
         setattr(db_product, key, value)
     db.commit()
     db.refresh(db_product)
